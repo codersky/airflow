@@ -15,12 +15,15 @@
     specific language governing permissions and limitations
     under the License.
 
+
+.. _executor:DebugExecutor:
+
 Debug Executor
 ==================
 
 The :class:`~airflow.executors.debug_executor.DebugExecutor` is meant as
 a debug tool and can be used from IDE. It is a single process executor that
-queues :class:`~models.taskinstance.TaskInstance` and executes them by running
+queues :class:`~airflow.models.taskinstance.TaskInstance` and executes them by running
 ``_run_raw_task`` method.
 
 Due to its nature the executor can be used with SQLite database. When used
@@ -30,6 +33,7 @@ blocking the execution of DAG.
 Additionally ``DebugExecutor`` can be used in a fail-fast mode that will make
 all other running or scheduled tasks fail immediately. To enable this option set
 ``AIRFLOW__DEBUG__FAIL_FAST=True`` or adjust ``fail_fast`` option in your ``airflow.cfg``.
+For more information on setting the configuration, see :doc:`../howto/set-config`.
 
 **IDE setup steps:**
 

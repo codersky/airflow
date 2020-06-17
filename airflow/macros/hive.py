@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -39,7 +38,7 @@ def max_partition(
                        e.g. {'key1': 'value1', 'key2': 'value2'}.
                        Only partitions matching all partition_key:partition_value
                        pairs will be considered as candidates of max partition.
-    :type filter_map: map
+    :type filter_map: dict
     :param field: the field to get the max value from. If there's only
         one partition field, this will be inferred
     :type field: str
@@ -47,7 +46,7 @@ def max_partition(
     >>> max_partition('airflow.static_babynames_partitioned')
     '2015-01-01'
     """
-    from airflow.hooks.hive_hooks import HiveMetastoreHook
+    from airflow.providers.apache.hive.hooks.hive import HiveMetastoreHook
     if '.' in table:
         schema, table = table.split('.')
     hh = HiveMetastoreHook(metastore_conn_id=metastore_conn_id)
@@ -104,7 +103,7 @@ def closest_ds_partition(
     >>> closest_ds_partition(tbl, '2015-01-02')
     '2015-01-01'
     """
-    from airflow.hooks.hive_hooks import HiveMetastoreHook
+    from airflow.providers.apache.hive.hooks.hive import HiveMetastoreHook
     if '.' in table:
         schema, table = table.split('.')
     hh = HiveMetastoreHook(metastore_conn_id=metastore_conn_id)

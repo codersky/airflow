@@ -42,7 +42,8 @@ Build configuration overview
 
 In order to trigger a build, it is necessary to pass the build configuration.
 
-.. exampleinclude:: ../../../../airflow/gcp/example_dags/example_cloud_build.py
+
+.. exampleinclude:: ../../../../airflow/providers/google/cloud/example_dags/example_cloud_build.py
     :language: python
     :dedent: 0
     :start-after: [START howto_operator_gcp_create_build_from_storage_body]
@@ -50,7 +51,7 @@ In order to trigger a build, it is necessary to pass the build configuration.
 
 The source code for the build can come from `Google Cloud Build Storage <https://cloud.google.com/storage/>`__:
 
-.. literalinclude:: ../../../../tests/gcp/operators/test_cloud_build.py
+.. literalinclude:: ../../../../tests/providers/google/cloud/operators/test_cloud_build.py
     :language: python
     :dedent: 12
     :start-after: [START howto_operator_gcp_cloud_build_source_gcs_dict]
@@ -58,7 +59,7 @@ The source code for the build can come from `Google Cloud Build Storage <https:/
 
 It is also possible to specify it using the URL:
 
-.. literalinclude:: ../../../../tests/gcp/operators/test_cloud_build.py
+.. literalinclude:: ../../../../tests/providers/google/cloud/operators/test_cloud_build.py
     :language: python
     :dedent: 12
     :start-after: [START howto_operator_gcp_cloud_build_source_gcs_url]
@@ -66,7 +67,7 @@ It is also possible to specify it using the URL:
 
 In addition, a build can refer to source stored in `Google Cloud Source Repositories <https://cloud.google.com/source-repositories/docs/>`__.
 
-.. literalinclude:: ../../../../tests/gcp/operators/test_cloud_build.py
+.. literalinclude:: ../../../../tests/providers/google/cloud/operators/test_cloud_build.py
     :language: python
     :dedent: 12
     :start-after: [START howto_operator_gcp_cloud_build_source_repo_dict]
@@ -74,35 +75,43 @@ In addition, a build can refer to source stored in `Google Cloud Source Reposito
 
 It is also possible to specify it using the URL:
 
-.. literalinclude:: ../../../../tests/gcp/operators/test_cloud_build.py
+.. literalinclude:: ../../../../tests/providers/google/cloud/operators/test_cloud_build.py
     :language: python
     :dedent: 12
     :start-after: [START howto_operator_gcp_cloud_build_source_repo_url]
     :end-before: [END howto_operator_gcp_cloud_build_source_repo_url]
 
+It is also possible to specify it using a YAML or JSON format.
+
+.. exampleinclude:: ../../../../airflow/providers/google/cloud/example_dags/example_cloud_build.py
+    :language: python
+    :dedent: 0
+    :start-after: [START howto_operator_gcp_create_build_from_yaml_body]
+    :end-before: [END howto_operator_gcp_create_build_from_yaml_body]
+
 Read `Build Configuration Overview <https://cloud.google.com/cloud-build/docs/build-config>`__ to understand all the fields you can include in a build config file.
 
 
-.. _howto/operator:CloudBuildCreateOperator:
+.. _howto/operator:CloudBuildCreateBuildOperator:
 
 Trigger a build
 ^^^^^^^^^^^^^^^
 
 Trigger a build is performed with the
-:class:`~airflow.gcp.operators.cloud_build.CloudBuildCreateOperator` operator.
+:class:`~airflow.providers.google.cloud.operators.cloud_build.CloudBuildCreateBuildOperator` operator.
 
-.. exampleinclude:: ../../../../airflow/gcp/example_dags/example_cloud_build.py
+.. exampleinclude:: ../../../../airflow/providers/google/cloud/example_dags/example_cloud_build.py
     :language: python
     :dedent: 4
     :start-after: [START howto_operator_create_build_from_storage]
     :end-before: [END howto_operator_create_build_from_storage]
 
 You can use :ref:`Jinja templating <jinja-templating>` with
-:template-fields:`airflow.gcp.operators.cloud_build.CloudBuildCreateOperator`
+:template-fields:`airflow.providers.google.cloud.operators.cloud_build.CloudBuildCreateBuildOperator`
 parameters which allows you to dynamically determine values. The result is saved to :ref:`XCom <concepts:xcom>`, which allows it
 to be used by other operators.
 
-.. exampleinclude:: ../../../../airflow/gcp/example_dags/example_cloud_build.py
+.. exampleinclude:: ../../../../airflow/providers/google/cloud/example_dags/example_cloud_build.py
     :language: python
     :dedent: 4
     :start-after: [START howto_operator_create_build_from_storage_result]

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -63,7 +62,9 @@ class TestElasticsearchTaskHandler(unittest.TestCase):
             self.json_fields
         )
 
-        self.es = elasticsearch.Elasticsearch(hosts=[{'host': 'localhost', 'port': 9200}])
+        self.es = elasticsearch.Elasticsearch(  # pylint: disable=invalid-name
+            hosts=[{'host': 'localhost', 'port': 9200}]
+        )
         self.index_name = 'test_index'
         self.doc_type = 'log'
         self.test_message = 'some random stuff'
@@ -253,9 +254,8 @@ class TestElasticsearchTaskHandler(unittest.TestCase):
         self.assertTrue(self.es_task_handler.mark_end_on_close)
 
     def test_set_context_w_json_format_and_write_stdout(self):
-        self.es_task_handler.formatter = mock.MagicMock()
-        self.es_task_handler.formatter._fmt = mock.MagicMock()
-        self.es_task_handler.formatter._fmt.find = mock.MagicMock(return_value=1)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        self.es_task_handler.formatter = formatter
         self.es_task_handler.write_stdout = True
         self.es_task_handler.json_format = True
         self.es_task_handler.set_context(self.ti)

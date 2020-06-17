@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -18,16 +17,14 @@
 # under the License.
 
 """Sentry Integration"""
-
-
+import logging
 from functools import wraps
 
 from airflow.configuration import conf
-from airflow.utils.db import provide_session
-from airflow.utils.log.logging_mixin import LoggingMixin
+from airflow.utils.session import provide_session
 from airflow.utils.state import State
 
-log = LoggingMixin().log
+log = logging.getLogger(__name__)
 
 
 class DummySentry:
@@ -53,6 +50,11 @@ class DummySentry:
         Blank function for formatting a TaskInstance._run_raw_task.
         """
         return run
+
+    def flush(self):
+        """
+        Blank function for flushing errors.
+        """
 
 
 class ConfiguredSentry(DummySentry):
@@ -148,6 +150,10 @@ class ConfiguredSentry(DummySentry):
                     raise
 
         return wrapper
+
+    def flush(self):
+        import sentry_sdk
+        sentry_sdk.flush()
 
 
 Sentry = DummySentry()  # type: DummySentry

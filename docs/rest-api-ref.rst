@@ -33,6 +33,8 @@ Endpoints
 .. http:post:: /api/experimental/dags/<DAG_ID>/dag_runs
 
   Creates a dag_run for a given dag id.
+  Note: If execution_date is not specified in the body, airflow by default creates only one DAG per second for a given DAG_ID.
+  In order to create multiple DagRun within one second, execution_date must be specified with the format "YYYY-mm-DDTHH:MM:SS.ssssss".
 
   **Trigger DAG with config, example:**
 
@@ -75,6 +77,11 @@ Endpoints
   '<string:paused>' must be a 'true' to pause a DAG and 'false' to unpause.
 
 
+.. http:get:: /api/experimental/dags/<DAG_ID>/paused
+
+  Returns the paused state of a DAG
+
+
 .. http:get:: /api/experimental/latest_runs
 
   Returns the latest DagRun for each DAG formatted for the UI.
@@ -98,3 +105,7 @@ Endpoints
 .. http:delete:: /api/experimental/pools/<string:name>
 
   Delete pool.
+
+.. http:get:: /api/experimental/lineage/<DAG_ID>/<string:execution_date>/
+
+  Returns the lineage information for the dag.

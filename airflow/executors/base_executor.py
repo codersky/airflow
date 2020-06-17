@@ -20,19 +20,21 @@ Base executor - this is the base class for all the implemented executors.
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from airflow import LoggingMixin, conf
+from airflow.configuration import conf
 from airflow.models import TaskInstance
 from airflow.models.taskinstance import SimpleTaskInstance, TaskInstanceKeyType
 from airflow.stats import Stats
+from airflow.utils.log.logging_mixin import LoggingMixin
 from airflow.utils.state import State
 
 PARALLELISM: int = conf.getint('core', 'PARALLELISM')
 
 NOT_STARTED_MESSAGE = "The executor should be started first!"
 
-# Command to execute - might be either string or list of strings
-# with the same semantics as subprocess.Popen
-CommandType = Union[str, List[str]]
+# Command to execute - list of strings
+# the first element is always "airflow".
+# It should be result of TaskInstance.generate_command method.q
+CommandType = List[str]
 
 
 # Task that is queued. It contains all the information that is
@@ -40,6 +42,10 @@ CommandType = Union[str, List[str]]
 #
 # Tuple of: command, priority, queue name, SimpleTaskInstance
 QueuedTaskInstanceType = Tuple[CommandType, int, Optional[str], Union[SimpleTaskInstance, TaskInstance]]
+
+# Event_buffer dict value type
+# Tuple of: state, info
+EventBufferValueType = Tuple[Optional[str], Any]
 
 
 class BaseExecutor(LoggingMixin):
@@ -56,7 +62,7 @@ class BaseExecutor(LoggingMixin):
         self.queued_tasks: OrderedDict[TaskInstanceKeyType, QueuedTaskInstanceType] \
             = OrderedDict()
         self.running: Set[TaskInstanceKeyType] = set()
-        self.event_buffer: Dict[TaskInstanceKeyType, Optional[str]] = {}
+        self.event_buffer: Dict[TaskInstanceKeyType, EventBufferValueType] = {}
 
     def start(self):  # pragma: no cover
         """
@@ -73,7 +79,7 @@ class BaseExecutor(LoggingMixin):
             self.log.info("Adding to queue: %s", command)
             self.queued_tasks[simple_task_instance.key] = (command, priority, queue, simple_task_instance)
         else:
-            self.log.info("could not queue task %s", simple_task_instance.key)
+            self.log.error("could not queue task %s", simple_task_instance.key)
 
     def queue_task_instance(
             self,
@@ -150,16 +156,25 @@ class BaseExecutor(LoggingMixin):
         self.log.debug("Calling the %s sync method", self.__class__)
         self.sync()
 
+    def order_queued_tasks_by_priority(self) -> List[Tuple[TaskInstanceKeyType, QueuedTaskInstanceType]]:
+        """
+        Orders the queued tasks by priority.
+
+        :return: List of tuples from the queued_tasks according to the priority.
+        """
+        return sorted(
+            [(k, v) for k, v in self.queued_tasks.items()],  # pylint: disable=unnecessary-comprehension
+            key=lambda x: x[1][1],
+            reverse=True)
+
     def trigger_tasks(self, open_slots: int) -> None:
         """
         Triggers tasks
 
         :param open_slots: Number of open slots
         """
-        sorted_queue = sorted(
-            [(k, v) for k, v in self.queued_tasks.items()],  # pylint: disable=unnecessary-comprehension
-            key=lambda x: x[1][1],
-            reverse=True)
+        sorted_queue = self.order_queued_tasks_by_priority()
+
         for _ in range(min((open_slots, len(self.queued_tasks)))):
             key, (command, _, _, simple_ti) = sorted_queue.pop(0)
             self.queued_tasks.pop(key)
@@ -169,10 +184,11 @@ class BaseExecutor(LoggingMixin):
                                queue=None,
                                executor_config=simple_ti.executor_config)
 
-    def change_state(self, key: TaskInstanceKeyType, state: str) -> None:
+    def change_state(self, key: TaskInstanceKeyType, state: str, info=None) -> None:
         """
         Changes state of the task.
 
+        :param info: Executor information for the task instance
         :param key: Unique key for the task instance
         :param state: State to set for the task.
         """
@@ -181,25 +197,27 @@ class BaseExecutor(LoggingMixin):
             self.running.remove(key)
         except KeyError:
             self.log.debug('Could not find key: %s', str(key))
-        self.event_buffer[key] = state
+        self.event_buffer[key] = state, info
 
-    def fail(self, key: TaskInstanceKeyType) -> None:
+    def fail(self, key: TaskInstanceKeyType, info=None) -> None:
         """
         Set fail state for the event.
 
+        :param info: Executor information for the task instance
         :param key: Unique key for the task instance
         """
-        self.change_state(key, State.FAILED)
+        self.change_state(key, State.FAILED, info)
 
-    def success(self, key: TaskInstanceKeyType) -> None:
+    def success(self, key: TaskInstanceKeyType, info=None) -> None:
         """
         Set success state for the event.
 
+        :param info: Executor information for the task instance
         :param key: Unique key for the task instance
         """
-        self.change_state(key, State.SUCCESS)
+        self.change_state(key, State.SUCCESS, info)
 
-    def get_event_buffer(self, dag_ids=None) -> Dict[TaskInstanceKeyType, Optional[str]]:
+    def get_event_buffer(self, dag_ids=None) -> Dict[TaskInstanceKeyType, EventBufferValueType]:
         """
         Returns and flush the event buffer. In case dag_ids is specified
         it will only return and flush events for the given dag_ids. Otherwise
@@ -208,7 +226,7 @@ class BaseExecutor(LoggingMixin):
         :param dag_ids: to dag_ids to return events for, if None returns all
         :return: a dict of events
         """
-        cleared_events: Dict[TaskInstanceKeyType, Optional[str]] = dict()
+        cleared_events: Dict[TaskInstanceKeyType, EventBufferValueType] = dict()
         if dag_ids is None:
             cleared_events = self.event_buffer
             self.event_buffer = dict()

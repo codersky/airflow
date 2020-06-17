@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -21,10 +20,10 @@
 import os
 
 import psutil
-from setproctitle import setproctitle
+from setproctitle import setproctitle  # pylint: disable=no-name-in-module
 
 from airflow.task.task_runner.base_task_runner import BaseTaskRunner
-from airflow.utils.helpers import reap_process_group
+from airflow.utils.process_utils import reap_process_group
 
 CAN_FORK = hasattr(os, 'fork')
 
@@ -36,6 +35,7 @@ class StandardTaskRunner(BaseTaskRunner):
     def __init__(self, local_task_job):
         super().__init__(local_task_job)
         self._rc = None
+        self.dag = local_task_job.task_instance.task.dag
 
     def start(self):
         if CAN_FORK and not self.run_as_user:
@@ -47,13 +47,14 @@ class StandardTaskRunner(BaseTaskRunner):
         subprocess = self.run_command()
         return psutil.Process(subprocess.pid)
 
-    def _start_by_fork(self):
+    def _start_by_fork(self):  # pylint: disable=inconsistent-return-statements
         pid = os.fork()
         if pid:
             self.log.info("Started process %d to run task", pid)
             return psutil.Process(pid)
         else:
-            from airflow.bin.cli import get_parser
+            from airflow.cli.cli_parser import get_parser
+            from airflow.sentry import Sentry
             import signal
             import airflow.settings as settings
 
@@ -78,10 +79,14 @@ class StandardTaskRunner(BaseTaskRunner):
             setproctitle(proc_title.format(args))
 
             try:
-                args.func(args)
-                os._exit(0)
-            except Exception:
-                os._exit(1)
+                args.func(args, dag=self.dag)
+                return_code = 0
+            except Exception:  # pylint: disable=broad-except
+                return_code = 1
+            finally:
+                # Explicitly flush any pending exception to Sentry if enabled
+                Sentry.flush()
+                os._exit(return_code)  # pylint: disable=protected-access
 
     def return_code(self, timeout=0):
         # We call this multiple times, but we can only wait on the process once

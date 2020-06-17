@@ -15,7 +15,13 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Sequential executor."""
+"""
+SequentialExecutor
+
+.. seealso::
+    For more information on how the SequentialExecutor works, take a look at the guide:
+    :ref:`executor:SequentialExecutor`
+"""
 import subprocess
 from typing import Any, Optional
 
@@ -43,6 +49,10 @@ class SequentialExecutor(BaseExecutor):
                       command: CommandType,
                       queue: Optional[str] = None,
                       executor_config: Optional[Any] = None) -> None:
+
+        if command[0:3] != ["airflow", "tasks", "run"]:
+            raise ValueError('The command must start with ["airflow", "tasks", "run"].')
+
         self.commands_to_run.append((key, command))
 
     def sync(self) -> None:

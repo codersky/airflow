@@ -20,19 +20,33 @@ import datetime
 import enum
 import logging
 from inspect import Parameter, signature
-from typing import Any, Dict, Iterable, Optional, Set, Union
+from typing import Any, Dict, Iterable, List, Optional, Set, Union
 
 import cattr
 import pendulum
 from dateutil import relativedelta
+from pendulum.tz.timezone import Timezone
 
-from airflow import DAG, AirflowException, LoggingMixin
+from airflow.exceptions import AirflowException
 from airflow.models import Connection
 from airflow.models.baseoperator import BaseOperator, BaseOperatorLink
+from airflow.models.dag import DAG
 from airflow.serialization.enums import DagAttributeTypes as DAT, Encoding
+from airflow.serialization.helpers import serialize_template_field
 from airflow.serialization.json_schema import Validator, load_dag_schema
 from airflow.settings import json
-from airflow.www.utils import get_python_source
+from airflow.utils.code_utils import get_python_source
+from airflow.utils.module_loading import import_string
+
+log = logging.getLogger(__name__)
+FAILED = 'serialization_failed'
+
+BUILTIN_OPERATOR_EXTRA_LINKS: List[str] = [
+    "airflow.providers.google.cloud.operators.bigquery.BigQueryConsoleLink",
+    "airflow.providers.google.cloud.operators.bigquery.BigQueryConsoleIndexableLink",
+    "airflow.providers.google.cloud.operators.mlengine.AIPlatformConsoleLink",
+    "airflow.providers.qubole.operators.qubole.QDSLink"
+]
 
 
 class BaseSerialization:
@@ -106,11 +120,16 @@ class BaseSerialization:
     @classmethod
     def _is_excluded(cls, var: Any, attrname: str, instance: Any) -> bool:
         """Types excluded from serialization."""
-        # pylint: disable=unused-argument
+
+        if var is None:
+            if not cls._is_constructor_param(attrname, instance):
+                # Any instance attribute, that is not a constructor argument, we exclude None as the default
+                return True
+
+            return cls._value_is_hardcoded_default(attrname, var, instance)
         return (
-            var is None or
             isinstance(var, cls._excluded_types) or
-            cls._value_is_hardcoded_default(attrname, var)
+            cls._value_is_hardcoded_default(attrname, var, instance)
         )
 
     @classmethod
@@ -168,7 +187,7 @@ class BaseSerialization:
                 return cls._encode(var.timestamp(), type_=DAT.DATETIME)
             elif isinstance(var, datetime.timedelta):
                 return cls._encode(var.total_seconds(), type_=DAT.TIMEDELTA)
-            elif isinstance(var, (pendulum.tz.Timezone, pendulum.tz.timezone_info.TimezoneInfo)):
+            elif isinstance(var, (Timezone)):
                 return cls._encode(str(var.name), type_=DAT.TIMEZONE)
             elif isinstance(var, relativedelta.relativedelta):
                 encoded = {k: v for k, v in var.__dict__.items() if not k.startswith("_") and v}
@@ -189,11 +208,12 @@ class BaseSerialization:
                 return cls._encode(
                     [cls._serialize(v) for v in var], type_=DAT.TUPLE)
             else:
-                LOG.debug('Cast type %s to str in serialization.', type(var))
+                log.debug('Cast type %s to str in serialization.', type(var))
                 return str(var)
         except Exception:  # pylint: disable=broad-except
-            LOG.warning('Failed to stringify.', exc_info=True)
+            log.error('Failed to stringify.', exc_info=True)
             return FAILED
+
     # pylint: enable=too-many-return-statements
 
     @classmethod
@@ -221,7 +241,7 @@ class BaseSerialization:
         elif type_ == DAT.TIMEDELTA:
             return datetime.timedelta(seconds=var)
         elif type_ == DAT.TIMEZONE:
-            return pendulum.timezone(var)
+            return Timezone(var)
         elif type_ == DAT.RELATIVEDELTA:
             if 'weekday' in var:
                 var['weekday'] = relativedelta.weekday(*var['weekday'])  # type: ignore
@@ -234,14 +254,19 @@ class BaseSerialization:
             raise TypeError('Invalid type {!s} in deserialization.'.format(type_))
 
     _deserialize_datetime = pendulum.from_timestamp
-    _deserialize_timezone = pendulum.timezone
+    _deserialize_timezone = pendulum.tz.timezone
 
     @classmethod
     def _deserialize_timedelta(cls, seconds: int) -> datetime.timedelta:
         return datetime.timedelta(seconds=seconds)
 
     @classmethod
-    def _value_is_hardcoded_default(cls, attrname: str, value: Any) -> bool:
+    def _is_constructor_param(cls, attrname: str, instance: Any) -> bool:
+        # pylint: disable=unused-argument
+        return attrname in cls._CONSTRUCTOR_PARAMS
+
+    @classmethod
+    def _value_is_hardcoded_default(cls, attrname: str, value: Any, instance: Any) -> bool:
         """
         Return true if ``value`` is the hard-coded default for the given attribute.
 
@@ -252,8 +277,14 @@ class BaseSerialization:
         user explicitly specifies an attribute with the same "value" as the
         default. (This is because ``"default" is "default"`` will be False as
         they are different strings with the same characters.)
+
+        Also returns True if the value is an empty list or empty dict. This is done
+        to account for the case where the default value of the field is None but has the
+        ``field = field or {}`` set.
         """
-        if attrname in cls._CONSTRUCTOR_PARAMS and cls._CONSTRUCTOR_PARAMS[attrname].default is value:
+        # pylint: disable=unused-argument
+        if attrname in cls._CONSTRUCTOR_PARAMS and \
+                (cls._CONSTRUCTOR_PARAMS[attrname] is value or (value in [{}, []])):
             return True
         return False
 
@@ -265,11 +296,11 @@ class SerializedBaseOperator(BaseOperator, BaseSerialization):
     Class specific attributes used by UI are move to object attributes.
     """
 
-    _decorated_fields = {'executor_config', }
+    _decorated_fields = {'executor_config'}
 
     _CONSTRUCTOR_PARAMS = {
-        k: v for k, v in signature(BaseOperator).parameters.items()
-        if v.default is not v.empty and v.default is not None
+        k: v.default for k, v in signature(BaseOperator.__init__).parameters.items()
+        if v.default is not v.empty
     }
 
     def __init__(self, *args, **kwargs):
@@ -303,20 +334,32 @@ class SerializedBaseOperator(BaseOperator, BaseSerialization):
         if op.operator_extra_links:
             serialize_op['_operator_extra_links'] = \
                 cls._serialize_operator_extra_links(op.operator_extra_links)
+
+        # Store all template_fields as they are if there are JSON Serializable
+        # If not, store them as strings
+        if op.template_fields:
+            for template_field in op.template_fields:
+                value = getattr(op, template_field, None)
+                if not cls._is_excluded(value, template_field, op):
+                    serialize_op[template_field] = serialize_template_field(value)
+
         return serialize_op
 
     @classmethod
     def deserialize_operator(cls, encoded_op: Dict[str, Any]) -> BaseOperator:
         """Deserializes an operator from a JSON object.
         """
-        from airflow.plugins_manager import operator_extra_links
+        from airflow import plugins_manager
+        plugins_manager.initialize_extra_operators_links_plugins()
 
+        if plugins_manager.operator_extra_links is None:
+            raise AirflowException("Cnn't load plugins")
         op = SerializedBaseOperator(task_id=encoded_op['task_id'])
 
         # Extra Operator Links defined in Plugins
         op_extra_links_from_plugin = {}
 
-        for ope in operator_extra_links:
+        for ope in plugins_manager.operator_extra_links:
             for operator in ope.operators:
                 if operator.__name__ == encoded_op["_task_type"] and \
                         operator.__module__ == encoded_op["_task_module"]:
@@ -337,6 +380,8 @@ class SerializedBaseOperator(BaseOperator, BaseSerialization):
                 v = SerializedDAG.deserialize_dag(v)
             elif k in {"retry_delay", "execution_timeout"}:
                 v = cls._deserialize_timedelta(v)
+            elif k in encoded_op["template_fields"]:
+                pass
             elif k.endswith("_date"):
                 v = cls._deserialize_datetime(v)
             elif k == "_operator_extra_links":
@@ -356,6 +401,11 @@ class SerializedBaseOperator(BaseOperator, BaseSerialization):
         for k in op.get_serialized_fields() - encoded_op.keys() - cls._CONSTRUCTOR_PARAMS.keys():
             setattr(op, k, None)
 
+        # Set all the template_field to None that were not present in Serialized JSON
+        for field in op.template_fields:
+            if not hasattr(op, field):
+                setattr(op, field, None)
+
         return op
 
     @classmethod
@@ -366,9 +416,6 @@ class SerializedBaseOperator(BaseOperator, BaseSerialization):
             dag_date = getattr(op.dag, attrname, None)
             if var is dag_date or var == dag_date:
                 return True
-        if attrname in {"executor_config", "params"} and not var:
-            # Don't store empty executor config or params dicts.
-            return True
         return super()._is_excluded(var, attrname, op)
 
     @classmethod
@@ -383,8 +430,11 @@ class SerializedBaseOperator(BaseOperator, BaseSerialization):
         :param encoded_op_links: Serialized Operator Link
         :return: De-Serialized Operator Link
         """
-        from airflow.plugins_manager import registered_operator_link_classes
+        from airflow import plugins_manager
+        plugins_manager.initialize_extra_operators_links_plugins()
 
+        if plugins_manager.registered_operator_link_classes is None:
+            raise AirflowException("Can't load plugins")
         op_predefined_extra_links = {}
 
         for _operator_links_source in encoded_op_links:
@@ -394,23 +444,40 @@ class SerializedBaseOperator(BaseOperator, BaseSerialization):
             # Example of a single iteration:
             #
             #   _operator_links_source =
-            #   {'airflow.gcp.operators.bigquery.BigQueryConsoleIndexableLink': {'index': 0}},
+            #   {
+            #       'airflow.providers.google.cloud.operators.bigquery.BigQueryConsoleIndexableLink': {
+            #           'index': 0
+            #       }
+            #   },
             #
             #   list(_operator_links_source.items()) =
-            #   [('airflow.gcp.operators.bigquery.BigQueryConsoleIndexableLink', {'index': 0})]
+            #   [
+            #       (
+            #           'airflow.providers.google.cloud.operators.bigquery.BigQueryConsoleIndexableLink',
+            #           {'index': 0}
+            #       )
+            #   ]
             #
             #   list(_operator_links_source.items())[0] =
-            #   ('airflow.gcp.operators.bigquery.BigQueryConsoleIndexableLink', {'index': 0})
+            #   (
+            #       'airflow.providers.google.cloud.operators.bigquery.BigQueryConsoleIndexableLink',
+            #       {
+            #           'index': 0
+            #       }
+            #   )
 
-            _operator_link_class, data = list(_operator_links_source.items())[0]
-
-            if _operator_link_class in registered_operator_link_classes:
-                single_op_link_class_name = registered_operator_link_classes[_operator_link_class]
+            _operator_link_class_path, data = list(_operator_links_source.items())[0]
+            if _operator_link_class_path in BUILTIN_OPERATOR_EXTRA_LINKS:
+                single_op_link_class = import_string(_operator_link_class_path)
+            elif _operator_link_class_path in plugins_manager.registered_operator_link_classes:
+                single_op_link_class = plugins_manager.registered_operator_link_classes[
+                    _operator_link_class_path
+                ]
             else:
-                raise KeyError("Operator Link class %r not registered" % _operator_link_class)
+                raise KeyError("Operator Link class %r not registered" % _operator_link_class_path)
 
             op_predefined_extra_link: BaseOperatorLink = cattr.structure(
-                data, single_op_link_class_name)
+                data, single_op_link_class)
 
             op_predefined_extra_links.update(
                 {op_predefined_extra_link.name: op_predefined_extra_link}
@@ -425,7 +492,8 @@ class SerializedBaseOperator(BaseOperator, BaseSerialization):
     ):
         """
         Serialize Operator Links. Store the import path of the OperatorLink and the arguments
-        passed to it. Example ``[{'airflow.gcp.operators.bigquery.BigQueryConsoleLink': {}}]``
+        passed to it. Example
+        ``[{'airflow.providers.google.cloud.operators.bigquery.BigQueryConsoleLink': {}}]``
 
         :param operator_extra_links: Operator Link
         :return: Serialized Operator Link
@@ -458,7 +526,7 @@ class SerializedDAG(DAG, BaseSerialization):
     not pickle-able. SerializedDAG works for all DAGs.
     """
 
-    _decorated_fields = {'schedule_interval', 'default_args'}
+    _decorated_fields = {'schedule_interval', 'default_args', '_access_control'}
 
     @staticmethod
     def __get_constructor_defaults():  # pylint: disable=no-method-argument
@@ -469,9 +537,10 @@ class SerializedDAG(DAG, BaseSerialization):
             'access_control': '_access_control',
         }
         return {
-            param_to_attr.get(k, k): v for k, v in signature(DAG).parameters.items()
-            if v.default is not v.empty and v.default is not None
+            param_to_attr.get(k, k): v.default for k, v in signature(DAG.__init__).parameters.items()
+            if v.default is not v.empty
         }
+
     _CONSTRUCTOR_PARAMS = __get_constructor_defaults.__func__()  # type: ignore
     del __get_constructor_defaults
 
@@ -502,7 +571,7 @@ class SerializedDAG(DAG, BaseSerialization):
                 k = "task_dict"
             elif k == "timezone":
                 v = cls._deserialize_timezone(v)
-            elif k in {"retry_delay", "execution_timeout"}:
+            elif k in {"dagrun_timeout"}:
                 v = cls._deserialize_timedelta(v)
             elif k.endswith("_date"):
                 v = cls._deserialize_datetime(v)
@@ -532,7 +601,7 @@ class SerializedDAG(DAG, BaseSerialization):
             for task_id in serializable_task.downstream_task_ids:
                 # Bypass set_upstream etc here - it does more than we want
                 # noinspection PyProtectedMember
-                dag.task_dict[task_id]._upstream_task_ids.add(task_id)  # pylint: disable=protected-access
+                dag.task_dict[task_id]._upstream_task_ids.add(serializable_task.task_id)  # noqa: E501 # pylint: disable=protected-access
 
         return dag
 
@@ -556,7 +625,3 @@ class SerializedDAG(DAG, BaseSerialization):
         if ver != cls.SERIALIZER_VERSION:
             raise ValueError("Unsure how to deserialize version {!r}".format(ver))
         return cls.deserialize_dag(serialized_obj['dag'])
-
-
-LOG = LoggingMixin().log
-FAILED = 'serialization_failed'

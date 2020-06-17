@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -24,13 +23,13 @@ from datetime import datetime
 from typing import List
 
 import pandas as pd
-from flask import Blueprint, request
+from flask import Blueprint, Markup, request
 from flask_appbuilder import BaseView, expose
 
-from airflow.hooks.hive_hooks import HiveCliHook, HiveMetastoreHook
-from airflow.hooks.mysql_hook import MySqlHook
-from airflow.hooks.presto_hook import PrestoHook
 from airflow.plugins_manager import AirflowPlugin
+from airflow.providers.apache.hive.hooks.hive import HiveCliHook, HiveMetastoreHook
+from airflow.providers.mysql.hooks.mysql import MySqlHook
+from airflow.providers.presto.hooks.presto import PrestoHook
 from airflow.www.decorators import gzipped
 
 METASTORE_CONN_ID = 'metastore_default'
@@ -38,8 +37,8 @@ METASTORE_MYSQL_CONN_ID = 'metastore_mysql'
 PRESTO_CONN_ID = 'presto_default'
 HIVE_CLI_CONN_ID = 'hive_default'
 DEFAULT_DB = 'default'
-DB_WHITELIST = []  # type: List[str]
-DB_BLACKLIST = ['tmp']  # type: List[str]
+DB_ALLOW_LIST = []  # type: List[str]
+DB_DENY_LIST = ['tmp']  # type: List[str]
 TABLE_SELECTOR_LIMIT = 2000
 
 # Keeping pandas from truncating long strings
@@ -77,7 +76,7 @@ class MetastoreBrowserView(BaseView):
             escape=False,
             na_rep='',)
         return self.render_template(
-            "metastore_browser/dbs.html", table=table)
+            "metastore_browser/dbs.html", table=Markup(table))
 
     @expose('/table/')
     def table(self):
@@ -140,11 +139,11 @@ class MetastoreBrowserView(BaseView):
         Retrieve objects from TBLS and DBS
         """
         where_clause = ''
-        if DB_WHITELIST:
-            dbs = ",".join(["'" + db + "'" for db in DB_WHITELIST])
+        if DB_ALLOW_LIST:
+            dbs = ",".join(["'" + db + "'" for db in DB_ALLOW_LIST])
             where_clause = "AND b.name IN ({})".format(dbs)
-        if DB_BLACKLIST:
-            dbs = ",".join(["'" + db + "'" for db in DB_BLACKLIST])
+        if DB_DENY_LIST:
+            dbs = ",".join(["'" + db + "'" for db in DB_DENY_LIST])
             where_clause = "AND b.name NOT IN ({})".format(dbs)
         sql = """
         SELECT CONCAT(b.NAME, '.', a.TBL_NAME), TBL_TYPE

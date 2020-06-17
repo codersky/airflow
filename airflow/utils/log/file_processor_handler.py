@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -107,7 +106,7 @@ class FileProcessorHandler(logging.Handler):
         """
         log_directory = self._get_log_directory()
         latest_log_directory_path = os.path.join(self.base_log_folder, "latest")
-        if os.path.isdir(log_directory):
+        if os.path.isdir(log_directory):  # pylint: disable=too-many-nested-blocks
             try:
                 # if symlink exists but is stale, update it
                 if os.path.islink(latest_log_directory_path):
@@ -133,9 +132,10 @@ class FileProcessorHandler(logging.Handler):
         :param filename: task instance object
         :return: relative log path of the given task instance
         """
-        relative_path = self._render_filename(filename)
-        full_path = os.path.join(self._get_log_directory(), relative_path)
-        directory = os.path.dirname(full_path)
+        relative_log_file_path = os.path.join(
+            self._get_log_directory(), self._render_filename(filename))
+        log_file_path = os.path.abspath(relative_log_file_path)
+        directory = os.path.dirname(log_file_path)
 
         if not os.path.exists(directory):
             try:
@@ -144,7 +144,7 @@ class FileProcessorHandler(logging.Handler):
                 if not os.path.isdir(directory):
                     raise
 
-        if not os.path.exists(full_path):
-            open(full_path, "a").close()
+        if not os.path.exists(log_file_path):
+            open(log_file_path, "a").close()
 
-        return full_path
+        return log_file_path

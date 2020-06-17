@@ -25,18 +25,21 @@ from airflow.kubernetes.k8s_model import append_to_pod
 from airflow.kubernetes.pod_generator import PodGenerator
 from airflow.kubernetes.secret import Secret
 from airflow.utils.log.logging_mixin import LoggingMixin
-from airflow.version import version as airflow_version
 
 
 class WorkerConfiguration(LoggingMixin):
-    """Contains Kubernetes Airflow Worker configuration logic"""
+    """
+    Contains Kubernetes Airflow Worker configuration logic
+
+    :param kube_config: the kubernetes configuration from airflow.cfg
+    :type kube_config: airflow.executors.kubernetes_executor.KubeConfig
+    """
 
     dags_volume_name = 'airflow-dags'
     logs_volume_name = 'airflow-logs'
     git_sync_ssh_secret_volume_name = 'git-sync-ssh-key'
     git_ssh_key_secret_key = 'gitSshKey'
     git_sync_ssh_known_hosts_volume_name = 'git-sync-known-hosts'
-    git_ssh_known_hosts_configmap_key = 'known_hosts'
 
     def __init__(self, kube_config):
         self.kube_config = kube_config
@@ -70,7 +73,7 @@ class WorkerConfiguration(LoggingMixin):
             value=self.kube_config.git_sync_rev
         ), k8s.V1EnvVar(
             name='GIT_SYNC_DEPTH',
-            value='1'
+            value=self.kube_config.git_sync_depth
         ), k8s.V1EnvVar(
             name='GIT_SYNC_ONE_TIME',
             value='true'
@@ -280,6 +283,21 @@ class WorkerConfiguration(LoggingMixin):
                 read_only=True
             )
 
+        # Mount the airflow_local_settings.py file via a configmap the user has specified
+        if self.kube_config.airflow_local_settings_configmap:
+            if self.kube_config.airflow_local_settings_configmap != self.kube_config.airflow_configmap:
+                volume_mount_name = 'airflow-local-settings'
+            else:
+                volume_mount_name = 'airflow-config'
+
+            config_path = '{}/config/airflow_local_settings.py'.format(self.worker_airflow_home)
+            volume_mounts['airflow-local-settings'] = k8s.V1VolumeMount(
+                name=volume_mount_name,
+                mount_path=config_path,
+                sub_path='airflow_local_settings.py',
+                read_only=True
+            )
+
         return list(volume_mounts.values())
 
     def _get_volumes(self) -> List[k8s.V1Volume]:
@@ -339,6 +357,17 @@ class WorkerConfiguration(LoggingMixin):
                 )
             )
 
+        # Mount the airflow_local_settings.py file via a configmap the user has specified
+        if self.kube_config.airflow_local_settings_configmap:
+            if self.kube_config.airflow_local_settings_configmap != self.kube_config.airflow_configmap:
+                config_volume_name = 'airflow-local-settings'
+                volumes[config_volume_name] = k8s.V1Volume(
+                    name=config_volume_name,
+                    config_map=k8s.V1ConfigMapVolumeSource(
+                        name=self.kube_config.airflow_local_settings_configmap
+                    )
+                )
+
         # Mount the airflow.cfg file via a configmap the user has specified
         if self.kube_config.airflow_configmap:
             config_volume_name = 'airflow-config'
@@ -353,30 +382,47 @@ class WorkerConfiguration(LoggingMixin):
 
     def generate_dag_volume_mount_path(self) -> str:
         """Generate path for DAG volume"""
+
+        if self.kube_config.dags_volume_mount_point:
+            return self.kube_config.dags_volume_mount_point
+
         if self.kube_config.dags_volume_claim or self.kube_config.dags_volume_host:
             return self.worker_airflow_dags
 
         return self.kube_config.git_dags_folder_mount_point
 
-    def make_pod(self, namespace, worker_uuid, pod_id, dag_id, task_id, execution_date,
-                 try_number, airflow_command) -> k8s.V1Pod:
+    def _get_resources(self) -> k8s.V1ResourceRequirements:
+        if self.kube_config.worker_resources is None:
+            return None
+        resources_dict = self.kube_config.worker_resources
+
+        requests = {}
+        request_cpu = resources_dict.get('request_cpu', None)
+        if request_cpu is not None:
+            requests["cpu"] = request_cpu
+        request_memory = resources_dict.get('request_memory', None)
+        if request_memory is not None:
+            requests["memory"] = request_memory
+
+        limits = {}
+        limit_cpu = resources_dict.get('limit_cpu', None)
+        if limit_cpu is not None:
+            limits["cpu"] = limit_cpu
+        limit_memory = resources_dict.get('limit_memory', None)
+        if limit_memory is not None:
+            limits["memory"] = limit_memory
+
+        return k8s.V1ResourceRequirements(requests=requests, limits=limits)
+
+    def as_pod(self) -> k8s.V1Pod:
         """Creates POD."""
-        pod_generator = PodGenerator(
-            namespace=namespace,
-            name=pod_id,
+        if self.kube_config.pod_template_file:
+            return PodGenerator(pod_template_file=self.kube_config.pod_template_file).gen_pod()
+
+        pod = PodGenerator(
             image=self.kube_config.kube_image,
-            image_pull_policy=self.kube_config.kube_image_pull_policy,
+            image_pull_policy=self.kube_config.kube_image_pull_policy or 'IfNotPresent',
             image_pull_secrets=self.kube_config.image_pull_secrets,
-            labels={
-                'airflow-worker': worker_uuid,
-                'dag_id': dag_id,
-                'task_id': task_id,
-                'execution_date': execution_date,
-                'try_number': str(try_number),
-                'airflow_version': airflow_version.replace('+', '-'),
-                'kubernetes_executor': 'True',
-            },
-            cmds=airflow_command,
             volumes=self._get_volumes(),
             volume_mounts=self._get_volume_mounts(),
             init_containers=self._get_init_containers(),
@@ -385,10 +431,11 @@ class WorkerConfiguration(LoggingMixin):
             tolerations=self.kube_config.kube_tolerations,
             envs=self._get_environment(),
             node_selectors=self.kube_config.kube_node_selectors,
-            service_account_name=self.kube_config.worker_service_account_name,
-        )
+            service_account_name=self.kube_config.worker_service_account_name or 'default',
+            restart_policy='Never',
+            resources=self._get_resources(),
+        ).gen_pod()
 
-        pod = pod_generator.gen_pod()
         pod.spec.containers[0].env_from = pod.spec.containers[0].env_from or []
         pod.spec.containers[0].env_from.extend(self._get_env_from())
         pod.spec.security_context = self._get_security_context()

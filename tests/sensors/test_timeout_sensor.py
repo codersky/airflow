@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -20,8 +19,10 @@ import time
 import unittest
 from datetime import timedelta
 
-from airflow import DAG
+import pytest
+
 from airflow.exceptions import AirflowSensorTimeout, AirflowSkipException
+from airflow.models.dag import DAG
 from airflow.sensors.base_sensor_operator import BaseSensorOperator
 from airflow.utils import timezone
 from airflow.utils.decorators import apply_defaults
@@ -73,8 +74,9 @@ class TestSensorTimeout(unittest.TestCase):
         }
         self.dag = DAG(TEST_DAG_ID, default_args=args)
 
+    @pytest.mark.quarantined
     def test_timeout(self):
-        t = TimeoutTestSensor(
+        op = TimeoutTestSensor(
             task_id='test_timeout',
             execution_timeout=timedelta(days=2),
             return_value=False,
@@ -84,6 +86,6 @@ class TestSensorTimeout(unittest.TestCase):
         )
         self.assertRaises(
             AirflowSensorTimeout,
-            t.run,
+            op.run,
             start_date=DEFAULT_DATE, end_date=DEFAULT_DATE, ignore_ti_state=True
         )

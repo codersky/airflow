@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -20,10 +19,10 @@
 import unittest
 
 import boto3
+import mock
 
 from airflow.exceptions import AirflowTaskTimeout
 from airflow.providers.amazon.aws.hooks.datasync import AWSDataSyncHook
-from tests.compat import mock
 
 
 def no_datasync(x):
@@ -32,7 +31,13 @@ def no_datasync(x):
 
 try:
     from moto import mock_datasync
+    from moto.datasync.models import DataSyncBackend
+    # ToDo: Remove after the moto>1.3.14 is released and contains following commit:
+    # https://github.com/spulec/moto/commit/5cfbe2bb3d24886f2b33bb4480c60b26961226fc
+    if "create_task" not in dir(DataSyncBackend) or "delete_task" not in dir(DataSyncBackend):
+        mock_datasync = no_datasync
 except ImportError:
+    # flake8: noqa: F811
     mock_datasync = no_datasync
 
 
@@ -47,7 +52,7 @@ class TestAwsDataSyncHook(unittest.TestCase):
 
 
 # Explanation of: @mock.patch.object(AWSDataSyncHook, 'get_conn')
-# aws_hook.py fiddles with config files and changes the region
+# base_aws.py fiddles with config files and changes the region
 # If you have any ~/.credentials then aws_hook uses it for the region
 # This region might not match us-east-1 used for the mocked self.client
 
@@ -418,7 +423,3 @@ class TestAWSDataSyncHookMocked(unittest.TestCase):
                 task_execution_arn, max_iterations=1
             )
             self.assertIsNone(result)
-
-
-if __name__ == "__main__":
-    unittest.main()

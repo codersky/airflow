@@ -15,15 +15,23 @@
 # specific language governing permissions and limitations
 # under the License.
 """Config sub-commands"""
+import io
+
+import pygments
+from pygments.formatters.terminal import TerminalFormatter
+from pygments.lexers.configs import IniLexer
+
 from airflow.configuration import conf
+from airflow.utils.cli import should_use_colors
 
 
 def show_config(args):
     """Show current application configuration"""
-    config = conf.as_dict(display_sensitive=True, raw=True)
-
-    for section_key, parameters in sorted(config.items()):
-        print(f"[{section_key}]")
-        for parameter_key, value in sorted(parameters.items()):
-            print(f"{parameter_key}={value}")
-        print()
+    with io.StringIO() as output:
+        conf.write(output)
+        code = output.getvalue()
+        if should_use_colors(args):
+            code = pygments.highlight(
+                code=code, formatter=TerminalFormatter(), lexer=IniLexer()
+            )
+        print(code)

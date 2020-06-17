@@ -31,24 +31,25 @@ from sqlalchemy.orm.session import Session as SASession
 from sqlalchemy.pool import NullPool
 
 # noinspection PyUnresolvedReferences
+from airflow import api
+# pylint: disable=unused-import
 from airflow.configuration import AIRFLOW_HOME, WEBSERVER_CONFIG, conf  # NOQA F401
 from airflow.logging_config import configure_logging
-from airflow.utils.module_loading import import_string
-from airflow.utils.sqlalchemy import setup_event_handlers
+from airflow.utils.orm_event_handlers import setup_event_handlers
 
 log = logging.getLogger(__name__)
 
 
-TIMEZONE = pendulum.timezone('UTC')
+TIMEZONE = pendulum.tz.timezone('UTC')
 try:
     tz = conf.get("core", "default_timezone")
     if tz == "system":
-        TIMEZONE = pendulum.local_timezone()
+        TIMEZONE = pendulum.tz.local_timezone()
     else:
-        TIMEZONE = pendulum.timezone(tz)
-except Exception:
+        TIMEZONE = pendulum.tz.timezone(tz)
+except Exception:  # pylint: disable=broad-except
     pass
-log.info("Configured default timezone %s" % TIMEZONE)
+log.info("Configured default timezone %s", TIMEZONE)
 
 
 HEADER = '\n'.join([
@@ -64,48 +65,53 @@ LOGGING_LEVEL = logging.INFO
 # the prefix to append to gunicorn worker processes after init
 GUNICORN_WORKER_READY_PREFIX = "[ready] "
 
-LOG_FORMAT = conf.get('core', 'log_format')
-SIMPLE_LOG_FORMAT = conf.get('core', 'simple_log_format')
+LOG_FORMAT = conf.get('logging', 'log_format')
+SIMPLE_LOG_FORMAT = conf.get('logging', 'simple_log_format')
 
 SQL_ALCHEMY_CONN: Optional[str] = None
-DAGS_FOLDER: Optional[str] = None
 PLUGINS_FOLDER: Optional[str] = None
 LOGGING_CLASS_PATH: Optional[str] = None
+DAGS_FOLDER: str = os.path.expanduser(conf.get('core', 'DAGS_FOLDER'))
 
 engine: Optional[Engine] = None
 Session: Optional[SASession] = None
 
 # The JSON library to use for DAG Serialization and De-Serialization
-json = json
+json = json  # pylint: disable=self-assigning-variable
 
 
-def policy(task_instance):
+def policy(task):  # pylint: disable=unused-argument
     """
-    This policy setting allows altering task instances right before they
-    are executed. It allows administrator to rewire some task parameters.
-
-    Note that the ``TaskInstance`` object has an attribute ``task`` pointing
-    to its related task object, that in turns has a reference to the DAG
-    object. So you can use the attributes of all of these to define your
-    policy.
+    This policy setting allows altering tasks after they are loaded in
+    the DagBag. It allows administrator to rewire some task parameters.
 
     To define policy, add a ``airflow_local_settings`` module
-    to your PYTHONPATH that defines this ``policy`` function. It receives
-    a ``TaskInstance`` object and can alter it where needed.
+    to your PYTHONPATH that defines this ``policy`` function.
 
     Here are a few examples of how this can be useful:
 
     * You could enforce a specific queue (say the ``spark`` queue)
         for tasks using the ``SparkOperator`` to make sure that these
-        task instances get wired to the right workers
-    * You could force all task instances running on an
-        ``execution_date`` older than a week old to run in a ``backfill``
-        pool.
+        tasks get wired to the right workers
+    * You could enforce a task timeout policy, making sure that no tasks run
+        for more than 48 hours
     * ...
     """
 
 
-def pod_mutation_hook(pod):
+def task_instance_mutation_hook(task_instance):  # pylint: disable=unused-argument
+    """
+    This setting allows altering task instances before they are queued by
+    the Airflow scheduler.
+
+    To define task_instance_mutation_hook, add a ``airflow_local_settings`` module
+    to your PYTHONPATH that defines this ``task_instance_mutation_hook`` function.
+
+    This could be used, for instance, to modify the task instance during retries.
+    """
+
+
+def pod_mutation_hook(pod):  # pylint: disable=unused-argument
     """
     This setting allows altering ``kubernetes.client.models.V1Pod`` object
     before they are passed to the Kubernetes client by the ``PodLauncher``
@@ -120,7 +126,9 @@ def pod_mutation_hook(pod):
     """
 
 
+# pylint: disable=global-statement
 def configure_vars():
+    """ Configure Global Variables from airflow.cfg"""
     global SQL_ALCHEMY_CONN
     global DAGS_FOLDER
     global PLUGINS_FOLDER
@@ -135,7 +143,8 @@ def configure_vars():
 
 
 def configure_orm(disable_connection_pool=False):
-    log.debug("Setting up DB connection pool (PID %s)" % os.getpid())
+    """ Configure ORM using SQLAlchemy"""
+    log.debug("Setting up DB connection pool (PID %s)", os.getpid())
     global engine
     global Session
     engine_args = {}
@@ -175,8 +184,8 @@ def configure_orm(disable_connection_pool=False):
         # https://docs.sqlalchemy.org/en/13/core/pooling.html#disconnect-handling-pessimistic
         pool_pre_ping = conf.getboolean('core', 'SQL_ALCHEMY_POOL_PRE_PING', fallback=True)
 
-        log.info("settings.configure_orm(): Using pool settings. pool_size={}, max_overflow={}, "
-                 "pool_recycle={}, pid={}".format(pool_size, max_overflow, pool_recycle, os.getpid()))
+        log.debug("settings.configure_orm(): Using pool settings. pool_size=%d, max_overflow=%d, "
+                  "pool_recycle=%d, pid=%d", pool_size, max_overflow, pool_recycle, os.getpid())
         engine_args['pool_size'] = pool_size
         engine_args['pool_recycle'] = pool_recycle
         engine_args['pool_pre_ping'] = pool_pre_ping
@@ -187,9 +196,7 @@ def configure_orm(disable_connection_pool=False):
     engine_args['encoding'] = conf.get('core', 'SQL_ENGINE_ENCODING', fallback='utf-8')
 
     if conf.has_option('core', 'sql_alchemy_connect_args'):
-        connect_args = import_string(
-            conf.get('core', 'sql_alchemy_connect_args')
-        )
+        connect_args = conf.getimport('core', 'sql_alchemy_connect_args')
     else:
         connect_args = {}
 
@@ -218,7 +225,8 @@ def dispose_orm():
 
 
 def configure_adapters():
-    from pendulum import Pendulum
+    """ Register Adapters and DB Converters """
+    from pendulum import DateTime as Pendulum
     try:
         from sqlite3 import register_adapter
         register_adapter(Pendulum, lambda val: val.isoformat(' '))
@@ -237,6 +245,7 @@ def configure_adapters():
 
 
 def validate_session():
+    """ Validate ORM Session """
     worker_precheck = conf.getboolean('core', 'worker_precheck', fallback=False)
     if not worker_precheck:
         return True
@@ -280,23 +289,25 @@ def prepare_syspath():
 
 
 def import_local_settings():
-    try:
+    """ Import airflow_local_settings.py files to allow overriding any configs in settings.py file """
+    try:  # pylint: disable=too-many-nested-blocks
         import airflow_local_settings
 
         if hasattr(airflow_local_settings, "__all__"):
-            for i in airflow_local_settings.__all__:
+            for i in airflow_local_settings.__all__:  # pylint: disable=no-member
                 globals()[i] = getattr(airflow_local_settings, i)
         else:
             for k, v in airflow_local_settings.__dict__.items():
                 if not k.startswith("__"):
                     globals()[k] = v
 
-        log.info("Loaded airflow_local_settings from " + airflow_local_settings.__file__ + ".")
+        log.info("Loaded airflow_local_settings from %s .", airflow_local_settings.__file__)
     except ImportError:
         log.debug("Failed to import airflow_local_settings.", exc_info=True)
 
 
 def initialize():
+    """ Initialize Airflow with all the settings from this file """
     configure_vars()
     prepare_syspath()
     import_local_settings()
@@ -306,9 +317,11 @@ def initialize():
     # The webservers import this file from models.py with the default settings.
     configure_orm()
     configure_action_logging()
+    api.load_auth()
 
     # Ensure we close DB connections at scheduler and gunicon worker terminations
     atexit.register(dispose_orm)
+# pylint: enable=global-statement
 
 
 # Const stuff
